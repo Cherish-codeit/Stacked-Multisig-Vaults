@@ -227,3 +227,75 @@
     
     (ok (map-set pending-transactions transaction-id
       (merge transaction {cancelled: true})))))
+
+(define-public (initiate-recovery (vault-id uint) (new-owners (list 10 principal)) (new-threshold uint))
+  (let ((caller tx-sender)
+        (vault (unwrap! (map-get? vaults vault-id) err-not-found))
+        (recovery-id (var-get next-recovery-id)))
+    (asserts! (is-some (get recovery-address vault)) err-invalid-recovery-data)
+    (asserts! (is-eq caller (unwrap-panic (get recovery-address vault))) err-unauthorized)
+    (asserts! (> new-threshold u0) err-invalid-threshold)
+    (asserts! (<= new-threshold (len new-owners)) err-invalid-threshold)
+    
+    (map-set recovery-requests recovery-id {
+      vault-id: vault-id,
+      new-owners: new-owners,
+      new-threshold: new-threshold,
+      initiated-by: caller,
+      initiated-at: block-height,
+      execute-after: (+ block-height (get recovery-delay vault)),
+      executed: false
+    })
+    
+    (var-set next-recovery-id (+ recovery-id u1))
+    (ok recovery-id)))
+
+(define-public (execute-recovery (recovery-id uint))
+  (let ((recovery (unwrap! (map-get? recovery-requests recovery-id) err-not-found))
+        (vault (unwrap! (map-get? vaults (get vault-id recovery)) err-not-found)))
+    (asserts! (not (get executed recovery)) err-transaction-executed)
+    (asserts! (>= block-height (get execute-after recovery)) err-time-lock-active)
+    
+    ;; Remove old ownership mappings
+    (fold remove-vault-owner (get owners vault) (get vault-id recovery))
+    
+    ;; Set new ownership mappings
+    (fold set-vault-owner (get new-owners recovery) (get vault-id recovery))
+    
+    (map-set recovery-requests recovery-id
+      (merge recovery {executed: true}))
+    
+    (ok (map-set vaults (get vault-id recovery)
+      (merge vault {
+        owners: (get new-owners recovery),
+        threshold: (get new-threshold recovery)
+      })))))
+
+(define-private (remove-vault-owner (owner principal) (vault-id uint))
+  (begin
+    (map-delete vault-ownership {vault-id: vault-id, owner: owner})
+    vault-id))
+
+(define-public (emergency-pause-vault (vault-id uint))
+  (let ((vault (unwrap! (map-get? vaults vault-id) err-not-found)))
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+    (ok (map-set vaults vault-id
+      (merge vault {active: false})))))
+
+(define-public (revoke-signature (transaction-id uint))
+  (let ((caller tx-sender)
+        (transaction (unwrap! (map-get? pending-transactions transaction-id) err-not-found)))
+    (asserts! (not (get executed transaction)) err-transaction-executed)
+    (asserts! (not (get cancelled transaction)) err-transaction-executed)
+    (asserts! (is-some (index-of (get signatures transaction) caller)) err-unauthorized)
+    
+    (let ((new-signatures (filter is-not-caller (get signatures transaction)))
+          (new-count (- (get signature-count transaction) u1)))
+      (ok (map-set pending-transactions transaction-id
+        (merge transaction {
+          signatures: new-signatures,
+          signature-count: new-count
+        }))))))
+
+(define-private (is-not-caller (signer principal))
+  (not (is-eq signer tx-sender)))

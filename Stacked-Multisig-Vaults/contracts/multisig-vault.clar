@@ -85,12 +85,12 @@
       owners: owners,
       threshold: threshold,
       balance: u0,
-      created-at: block-height,
+      created-at: stacks-block-height,
       time-delay: time-delay,
       active: true,
       daily-limit: daily-limit,
       daily-spent: u0,
-      last-reset: block-height,
+      last-reset: stacks-block-height,
       recovery-address: recovery-address,
       recovery-delay: recovery-delay
     })
@@ -156,8 +156,8 @@
       amount: amount,
       signatures: (list caller),
       signature-count: u1,
-      created-at: block-height,
-      execute-after: (+ block-height (get time-delay vault)),
+      created-at: stacks-block-height,
+      execute-after: (+ stacks-block-height (get time-delay vault)),
       executed: false,
       cancelled: false,
       description: description,
@@ -195,7 +195,7 @@
     (asserts! (not (get executed transaction)) err-transaction-executed)
     (asserts! (not (get cancelled transaction)) err-transaction-executed)
     (asserts! (>= (get signature-count transaction) (get threshold vault-with-reset)) err-insufficient-signatures)
-    (asserts! (>= block-height (get execute-after transaction)) err-time-lock-active)
+    (asserts! (>= stacks-block-height (get execute-after transaction)) err-time-lock-active)
     (asserts! (>= (get balance vault-with-reset) (get amount transaction)) err-invalid-amount)
     
     ;; Check daily limit for regular transactions
@@ -242,8 +242,8 @@
       new-owners: new-owners,
       new-threshold: new-threshold,
       initiated-by: caller,
-      initiated-at: block-height,
-      execute-after: (+ block-height (get recovery-delay vault)),
+      initiated-at: stacks-block-height,
+      execute-after: (+ stacks-block-height (get recovery-delay vault)),
       executed: false
     })
     
@@ -254,7 +254,7 @@
   (let ((recovery (unwrap! (map-get? recovery-requests recovery-id) err-not-found))
         (vault (unwrap! (map-get? vaults (get vault-id recovery)) err-not-found)))
     (asserts! (not (get executed recovery)) err-transaction-executed)
-    (asserts! (>= block-height (get execute-after recovery)) err-time-lock-active)
+    (asserts! (>= stacks-block-height (get execute-after recovery)) err-time-lock-active)
     
     ;; Remove old ownership mappings
     (fold remove-vault-owner (get owners vault) (get vault-id recovery))
@@ -313,8 +313,8 @@
     recovery-address: (optional principal),
     recovery-delay: uint
   }))
-  (if (>= block-height (+ (get last-reset vault) u144)) ;; 144 blocks approx 1 day
-    (merge vault {daily-spent: u0, last-reset: block-height})
+  (if (>= stacks-block-height (+ (get last-reset vault) u144)) ;; 144 blocks approx 1 day
+    (merge vault {daily-spent: u0, last-reset: stacks-block-height})
     vault))
 
 (define-public (quick-send (vault-id uint) (recipient principal) (amount uint))

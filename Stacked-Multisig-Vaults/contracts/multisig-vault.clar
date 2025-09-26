@@ -299,3 +299,77 @@
 
 (define-private (is-not-caller (signer principal))
   (not (is-eq signer tx-sender)))
+
+
+(define-private (reset-daily-limit-if-needed (vault {
+    owners: (list 10 principal),
+    threshold: uint,
+    balance: uint,
+    created-at: uint,
+    time-delay: uint,
+    active: bool,
+    daily-limit: uint,
+    daily-spent: uint,
+    last-reset: uint,
+    recovery-address: (optional principal),
+    recovery-delay: uint
+  }))
+  (if (>= block-height (+ (get last-reset vault) u144)) ;; 144 blocks ≈ 1 day
+    (merge vault {daily-spent: u0, last-reset: block-height})
+    vault))
+
+(define-public (quick-send (vault-id uint) (recipient principal) (amount uint))
+  (let ((vault (unwrap! (map-get? vaults vault-id) err-not-found))
+        (vault-with-reset (reset-daily-limit-if-needed vault)))
+    (asserts! (get active vault-with-reset) err-vault-inactive)
+    (asserts! (default-to false (map-get? vault-ownership {vault-id: vault-id, owner: tx-sender})) err-unauthorized)
+    (asserts! (<= (+ (get daily-spent vault-with-reset) amount) (get daily-limit vault-with-reset)) err-unauthorized)
+    (asserts! (>= (get balance vault-with-reset) amount) err-invalid-amount)
+    
+    (try! (as-contract (stx-transfer? amount tx-sender recipient)))
+    
+    (ok (map-set vaults vault-id
+      (merge vault-with-reset {
+        balance: (- (get balance vault-with-reset) amount),
+        daily-spent: (+ (get daily-spent vault-with-reset) amount)
+      })))))
+
+(define-read-only (get-vault-info (vault-id uint))
+  (let ((vault-opt (map-get? vaults vault-id)))
+    (match vault-opt
+      vault-data (some (reset-daily-limit-if-needed vault-data))
+      none)))
+
+(define-read-only (get-transaction-info (transaction-id uint))
+  (map-get? pending-transactions transaction-id))
+
+(define-read-only (get-recovery-info (recovery-id uint))
+  (map-get? recovery-requests recovery-id))
+
+(define-read-only (is-vault-owner (vault-id uint) (user principal))
+  (default-to false (map-get? vault-ownership {vault-id: vault-id, owner: user})))
+
+(define-read-only (get-required-signatures (vault-id uint))
+  (let ((vault (map-get? vaults vault-id)))
+    (match vault
+      vault-data (get threshold vault-data)
+      u0)))
+
+(define-read-only (get-daily-limit-remaining (vault-id uint))
+  (let ((vault-opt (map-get? vaults vault-id)))
+    (match vault-opt
+      vault-data 
+        (let ((updated-vault (reset-daily-limit-if-needed vault-data)))
+          (- (get daily-limit updated-vault) (get daily-spent updated-vault)))
+      u0)))
+
+(define-read-only (get-pending-transactions-by-vault (vault-id uint))
+  (ok "Function to be implemented with iteration support"))
+
+(define-read-only (get-contract-info)
+  {
+    total-vaults: (- (var-get next-vault-id) u1),
+    total-transactions: (- (var-get next-transaction-id) u1),
+    total-recoveries: (- (var-get next-recovery-id) u1),
+    contract-owner: contract-owner
+  })

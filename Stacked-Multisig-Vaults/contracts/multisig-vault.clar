@@ -135,3 +135,95 @@
         daily-limit: new-daily-limit,
         time-delay: new-time-delay
       })))))
+
+(define-public (propose-transaction 
+  (vault-id uint)
+  (recipient principal)
+  (amount uint)
+  (description (string-ascii 256))
+  (transaction-type (string-ascii 20)))
+  (let ((caller tx-sender)
+        (vault (unwrap! (map-get? vaults vault-id) err-not-found))
+        (transaction-id (var-get next-transaction-id)))
+    (asserts! (get active vault) err-vault-inactive)
+    (asserts! (default-to false (map-get? vault-ownership {vault-id: vault-id, owner: caller})) err-unauthorized)
+    (asserts! (>= (get balance vault) amount) err-invalid-amount)
+    (asserts! (> amount u0) err-invalid-amount)
+    
+    (map-set pending-transactions transaction-id {
+      vault-id: vault-id,
+      recipient: recipient,
+      amount: amount,
+      signatures: (list caller),
+      signature-count: u1,
+      created-at: block-height,
+      execute-after: (+ block-height (get time-delay vault)),
+      executed: false,
+      cancelled: false,
+      description: description,
+      transaction-type: transaction-type
+    })
+    
+    (var-set next-transaction-id (+ transaction-id u1))
+    (ok transaction-id)))
+
+(define-public (sign-transaction (transaction-id uint))
+  (let ((caller tx-sender)
+        (transaction (unwrap! (map-get? pending-transactions transaction-id) err-not-found))
+        (vault (unwrap! (map-get? vaults (get vault-id transaction)) err-not-found)))
+    (asserts! (get active vault) err-vault-inactive)
+    (asserts! (not (get executed transaction)) err-transaction-executed)
+    (asserts! (not (get cancelled transaction)) err-transaction-executed)
+    (asserts! (default-to false (map-get? vault-ownership {vault-id: (get vault-id transaction), owner: caller})) err-unauthorized)
+    (asserts! (is-none (index-of (get signatures transaction) caller)) err-already-signed)
+    
+    (let ((new-signatures (unwrap! (as-max-len? (append (get signatures transaction) caller) u10) err-unauthorized))
+          (new-count (+ (get signature-count transaction) u1)))
+      
+      (ok (map-set pending-transactions transaction-id
+        (merge transaction {
+          signatures: new-signatures,
+          signature-count: new-count
+        }))))))
+
+(define-public (execute-transaction (transaction-id uint))
+  (let ((caller tx-sender)
+        (transaction (unwrap! (map-get? pending-transactions transaction-id) err-not-found))
+        (vault (unwrap! (map-get? vaults (get vault-id transaction)) err-not-found))
+        (vault-with-reset (reset-daily-limit-if-needed vault)))
+    (asserts! (get active vault-with-reset) err-vault-inactive)
+    (asserts! (not (get executed transaction)) err-transaction-executed)
+    (asserts! (not (get cancelled transaction)) err-transaction-executed)
+    (asserts! (>= (get signature-count transaction) (get threshold vault-with-reset)) err-insufficient-signatures)
+    (asserts! (>= block-height (get execute-after transaction)) err-time-lock-active)
+    (asserts! (>= (get balance vault-with-reset) (get amount transaction)) err-invalid-amount)
+    
+    ;; Check daily limit for regular transactions
+    (if (is-eq (get transaction-type transaction) "regular")
+        (asserts! (<= (+ (get daily-spent vault-with-reset) (get amount transaction)) (get daily-limit vault-with-reset)) err-unauthorized)
+        true)
+    
+    (try! (as-contract (stx-transfer? (get amount transaction) tx-sender (get recipient transaction))))
+    
+    (map-set pending-transactions transaction-id
+      (merge transaction {executed: true}))
+    
+    (let ((updated-vault (merge vault-with-reset {
+            balance: (- (get balance vault-with-reset) (get amount transaction)),
+            daily-spent: (if (is-eq (get transaction-type transaction) "regular")
+                           (+ (get daily-spent vault-with-reset) (get amount transaction))
+                           (get daily-spent vault-with-reset))
+          })))
+      (ok (map-set vaults (get vault-id transaction) updated-vault)))))
+
+(define-public (cancel-transaction (transaction-id uint))
+  (let ((caller tx-sender)
+        (transaction (unwrap! (map-get? pending-transactions transaction-id) err-not-found))
+        (vault (unwrap! (map-get? vaults (get vault-id transaction)) err-not-found)))
+    (asserts! (get active vault) err-vault-inactive)
+    (asserts! (not (get executed transaction)) err-transaction-executed)
+    (asserts! (not (get cancelled transaction)) err-transaction-executed)
+    (asserts! (default-to false (map-get? vault-ownership {vault-id: (get vault-id transaction), owner: caller})) err-unauthorized)
+    
+    (ok (map-set pending-transactions transaction-id
+      (merge transaction {cancelled: true})))))

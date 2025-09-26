@@ -300,7 +300,6 @@
 (define-private (is-not-caller (signer principal))
   (not (is-eq signer tx-sender)))
 
-
 (define-private (reset-daily-limit-if-needed (vault {
     owners: (list 10 principal),
     threshold: uint,
@@ -314,7 +313,7 @@
     recovery-address: (optional principal),
     recovery-delay: uint
   }))
-  (if (>= block-height (+ (get last-reset vault) u144)) ;; 144 blocks ≈ 1 day
+  (if (>= block-height (+ (get last-reset vault) u144)) ;; 144 blocks approx 1 day
     (merge vault {daily-spent: u0, last-reset: block-height})
     vault))
 
